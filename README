@@ -1,0 +1,138 @@
+# Monte Muambe — Geological Mapping via Remote Sensing & Unsupervised ML
+
+> **Unsupervised spectral mapping of the Monte Muambe inselberg (Tete Province, Mozambique) using ASTER L1T multispectral imagery, dimensionality reduction, and clustering algorithms.**
+
+---
+
+## Overview
+
+This repository implements an unsupervised machine learning pipeline for geological mapping of **Monte Muambe**, a prominent alkaline intrusion located in Tete Province, Mozambique (~16.3°S, 34.1°E). The project adapts and extends the framework of [Nagar et al. (2024)](https://doi.org/10.1016/j.jasr.xxxx.xx.xxx) — originally developed for the Mutawintji region, NSW, Australia — to a geologically distinct and significantly undercharacterised target in sub-equatorial Africa.
+
+Monte Muambe is an alkaline-carbonatite complex with known associations with critical mineral enrichment, making it a compelling target for remote sensing-based prospectivity analysis. The goal is to recover the mountain's **geological spectral fingerprint** from space, discriminating lithological units and surficial deposits without any labelled training data.
+
+---
+
+## Study Area
+
+| Parameter | Value |
+|---|---|
+| Location | Tete Province, Mozambique |
+| AOI (SW corner) | 16.352°S, 34.063°E |
+| AOI (NE corner) | 16.301°S, 34.126°E |
+| Target CRS | EPSG:32736 (WGS 84 / UTM Zone 36S) |
+| AOI approx. size | ~7 km × 6 km |
+| Sensor | ASTER L1T (Terra platform) |
+
+---
+
+## Data
+
+**ASTER L1T** (Advanced Spaceborne Thermal Emission and Reflection Radiometer) imagery is downloaded from the [NASA EOSDIS Earthdata](https://earthdata.nasa.gov/) portal. The following bands are used:
+
+| Subsystem | Bands | Native resolution |
+|---|---|---|
+| VNIR | B01, B02, B03N | 15 m |
+| SWIR | B04 – B09 | 30 m |
+| *(TIR bands are excluded in the current pipeline)* | | |
+
+All bands are resampled to a common **15 m grid** (the VNIR master resolution) via bilinear interpolation and stacked into a single `(9, Y, X)` datacube clipped to the AOI.
+
+![Monte Muambe (SWIR BAND)](output/monte_muambe_swir_b04_publication.png)
+
+---
+
+## Methodology
+
+The pipeline follows four stages, detailed in the notebook `Li_Mapping_with_SOM_PCA.ipynb`:
+
+### 1 — Preprocessing (`aster_preprocess`)
+- Loads individual single-band ASTER GeoTIFFs
+- Reprojects from the satellite's path-oriented UTM to **EPSG:32736** (fixes orbital skew)
+- Clips to the AOI polygon
+- Resamples all bands to 15 m via bilinear interpolation
+- Stacks into a single analysis-ready datacube GeoTIFF
+
+### 2 — Dimensionality Reduction
+
+Two methods are implemented and compared:
+
+**Principal Component Analysis (PCA)**
+Linear transformation retaining enough components to explain ≥ 95% of spectral variance. On this AOI, 4 components capture ~96.9% of variance (PC1: 76.8%, PC2: 10.2%, PC3: 7.7%, PC4: 2.3%).
+
+**Self-Organising Map (SOM)**
+A topology-preserving neural network that projects the 9-band spectral space onto a 2-D neuron grid. SOMs capture non-linear spectral manifolds that PCA cannot resolve. Implementation uses a custom `SOMTabular` class (PyTorch backend) with a 3×3 grid (9 active neurons) and `minisom` as an alternative backend.
+
+### 3 — Clustering (K-Means)
+
+K-Means partitions the reduced feature space into *k* spectral clusters, each corresponding to a candidate geological/surficial unit. The optimal *k* is selected via:
+- **Elbow method** (inertia vs. *k*)
+- **Calinski-Harabász index** (higher = better-separated clusters)
+- **Davies-Bouldin score** (lower = more compact clusters)
+- **Silhouette score** (computed for smaller *k* sweeps)
+
+The current best result uses **k = 5**.
+
+### 4 — Post-processing
+
+A **7×7 majority filter** is applied to the raw cluster label raster, replacing isolated pixels with the dominant class of their neighbourhood. This removes salt-and-pepper noise arising from atmospheric residuals and mixed pixels, producing geologically coherent unit boundaries.
+
+---
+
+## Results
+
+### K-Means Clustering (k=5, PCA features, majority filter 7×7)
+
+![K-Means clustering map](output/aster_kmeans_raw.png)
+
+*Five spectrally distinct units are resolved across the AOI. The concentric spatial pattern is consistent with the expected ring-structure geometry of an alkaline-carbonatite intrusion — a central core (orange/red tones) surrounded by annular marginal units (mint green, purple), with possible regolith/colluvial cover at the periphery (cyan anomalies).*
+
+**Cluster quality metrics (PCA + K-Means, k=5):**
+- Calinski-Harabász: 111 701
+- Davies-Bouldin: 1.21
+
+### SOM Clustering (3×3 grid, 9 neurons)
+
+![SOM clustering map](output/aster_som_map_raw.png)
+
+*The SOM resolves finer spectral gradients within the same AOI, distinguishing 9 neuron classes that capture the continuous variation from the intrusive core outward. The red annular halo (neurons 7–8) contrasts sharply with the blue inner zone (neurons 0–1), suggesting compositional or weathering-front zonation that K-Means merges into single clusters.*
+
+**Dominant endmember spectra** (SWIR wavelengths 1.65–2.40 µm) are extracted directly from the SOM weight matrix and can be compared against mineral spectral libraries (e.g. USGS Spectral Library, ASTER Spectral Library) to tentatively assign lithological identities to each neuron.
+
+---
+
+## Repository Structure
+
+```
+.
+├── Li_Mapping_with_SOM_PCA.ipynb   # Main analysis notebook (preprocessing → PCA → SOM → K-Means)
+├── Datasets/
+│   └── AST_L1T/                    # Raw ASTER L1T single-band GeoTIFFs (not tracked by git)
+├── output/
+│   ├── ASTER_datacube_reproj_clipped.tif   # Preprocessed 9-band datacube
+│   ├── aster_kmeans_filtered.png           # K-Means result (majority-filtered)
+│   ├── aster_som_map_raw.png               # SOM neuron map
+│   └── aster_som_spectral_curves.png       # Dominant endmember spectra
+└── README.md
+```
+
+---
+## Roadmap
+
+The following extensions are planned or in progress:
+
+- [ ] **Stacked Autoencoder** dimensionality reduction (following Nagar et al. 2024) as a non-linear alternative to PCA
+- [ ] Canonical Autoencoder baseline for comparison
+- [ ] Multi-source fusion: integrate Sentinel-2 (10 m VNIR/SWIR) and Landsat 9 over the same AOI
+- [ ] Cross-validation against available geological mapping of the Tete Province
+- [ ] Spectral angle mapper (SAM) comparison against USGS/ASTER mineral libraries
+- [ ] Export cluster polygons to GeoJSON for overlay with structural geology data
+
+---
+
+## Reference
+
+This project directly adapts the framework from:
+
+> Nagar, S., Farahbakhsh, E., Awange, J., & Chandra, R. (2024). *Remote sensing framework for geological mapping via stacked autoencoders and clustering.* Advances in Space Research. [arXiv:2404.02180](https://arxiv.org/abs/2404.02180)
+
+---
